@@ -12,7 +12,9 @@ authenticate(
   identity_type = 1,
   redirect_uri = "http://localhost",
   config_path = DEFAULT_CONFIG_PATH,
-  overwrite = FALSE
+  overwrite = FALSE,
+  mfa_code = NULL,
+  recovery_code = NULL
 )
 }
 \arguments{
@@ -31,6 +33,11 @@ authenticate(
 \item{config_path}{Path to save the configuration file.}
 
 \item{overwrite}{Logical flag to overwrite the existing configuration file (default is FALSE).}
+
+\item{mfa_code}{The 6 digit code from your authenticator app, when your account uses
+multi-factor sign-in (optional; will prompt in an interactive session if not provided).}
+
+\item{recovery_code}{A recovery code to use instead of an authenticator code (optional).}
 }
 \value{
 Invisibly returns the configuration list containing hostname and bearer_token.
@@ -56,6 +63,15 @@ authenticate(
     username = "username",
     password = "password",
     config_path = "~/.viaenv",
+    overwrite = TRUE
+)
+
+# With multi-factor sign-in
+authenticate(
+    hostname = "https://your_foundry_server",
+    username = "username",
+    password = "password",
+    mfa_code = "123456",
     overwrite = TRUE
 )
 }

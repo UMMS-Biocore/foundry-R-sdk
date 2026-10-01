@@ -9,7 +9,9 @@ login(
   username,
   password,
   identity_type = 1,
-  redirect_uri = "http://localhost"
+  redirect_uri = "http://localhost",
+  mfa_code = NULL,
+  recovery_code = NULL
 )
 }
 \arguments{
@@ -22,10 +24,16 @@ login(
 \item{identity_type}{The identity type.}
 
 \item{redirect_uri}{The redirect URI.}
+
+\item{mfa_code}{The 6 digit code from your authenticator app (optional).}
+
+\item{recovery_code}{A recovery code to use instead of an authenticator code (optional).}
 }
 \value{
 The cookie token.
 }
 \description{
-Login and retrieve the cookie token
+When the account uses multi-factor sign-in, the server answers the password step with a
+challenge, and the second factor (`mfa_code` or `recovery_code`) completes it. In an
+interactive session the code is prompted for when neither is given.
 }
