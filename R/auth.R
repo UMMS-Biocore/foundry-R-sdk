@@ -5,6 +5,10 @@ DEFAULT_CONFIG_PATH <- "~/.viaenv"
 .viaenv <- new.env()
 .viaenv$config_path <- DEFAULT_CONFIG_PATH
 
+# Session cookie names, current first. Servers before the Foundry Connect rebrand set only the
+# legacy name; newer servers set the current one and still accept the legacy one on read.
+SESSION_COOKIE_NAMES <- c("foundry-connect-cookie", "viafoundry-cookie")
+
 #' Authenticate with the `Via Foundry` API
 #'
 #' Authenticates the user with the `Via Foundry API` using either a personal access token
@@ -19,6 +23,9 @@ DEFAULT_CONFIG_PATH <- "~/.viaenv"
 #' @param redirect_uri The redirect `URI`.
 #' @param config_path Path to save the configuration file.
 #' @param overwrite Logical flag to overwrite the existing configuration file (default is FALSE).
+#' @param mfa_code The 6 digit code from your authenticator app, when your account uses
+#'   multi-factor sign-in (optional; will prompt in an interactive session if not provided).
+#' @param recovery_code A recovery code to use instead of an authenticator code (optional).
 #' @return Invisibly returns the configuration list containing hostname and bearer_token.
 #' @importFrom httr POST status_code content add_headers set_cookies
 #' @importFrom jsonlite fromJSON toJSON
@@ -42,10 +49,20 @@ DEFAULT_CONFIG_PATH <- "~/.viaenv"
 #'     config_path = "~/.viaenv",
 #'     overwrite = TRUE
 #' )
+#'
+#' # With multi-factor sign-in
+#' authenticate(
+#'     hostname = "https://your_foundry_server",
+#'     username = "username",
+#'     password = "password",
+#'     mfa_code = "123456",
+#'     overwrite = TRUE
+#' )
 #' }
 authenticate <- function(hostname = NULL, username = NULL, password = NULL, token = NULL,
-                         identity_type = 1, redirect_uri = "http://localhost", 
-                         config_path = DEFAULT_CONFIG_PATH, overwrite = FALSE) {
+                         identity_type = 1, redirect_uri = "http://localhost",
+                         config_path = DEFAULT_CONFIG_PATH, overwrite = FALSE,
+                         mfa_code = NULL, recovery_code = NULL) {
   # Set the global config path in the environment
   # Default config path is `~/.viaenv`
   .viaenv$config_path <- normalizePath(config_path, mustWork = FALSE)
@@ -129,7 +146,8 @@ authenticate <- function(hostname = NULL, username = NULL, password = NULL, toke
   }
   
   # Step 1: Retrieve the cookie token
-  cookie_token <- login(hostname, username, password, identity_type, redirect_uri)
+  cookie_token <- login(hostname, username, password, identity_type, redirect_uri,
+                        mfa_code = mfa_code, recovery_code = recovery_code)
   
   # Step 2: Retrieve the bearer token using the cookie token
   bearer_token <- get_bearer_token(hostname, cookie_token)
@@ -201,15 +219,22 @@ authenticate_token <- function(hostname, token, config_path = DEFAULT_CONFIG_PAT
 
 #' Login and retrieve the cookie token
 #'
+#' When the account uses multi-factor sign-in, the server answers the password step with a
+#' challenge, and the second factor (`mfa_code` or `recovery_code`) completes it. In an
+#' interactive session the code is prompted for when neither is given.
+#'
 #' @param hostname The API url
 #' @param username The login username.
 #' @param password The login password.
 #' @param identity_type The identity type.
 #' @param redirect_uri The redirect URI.
+#' @param mfa_code The 6 digit code from your authenticator app (optional).
+#' @param recovery_code A recovery code to use instead of an authenticator code (optional).
 #' @return The cookie token.
-#' @importFrom httr POST content headers status_code
+#' @importFrom httr POST content status_code handle cookies
 #' @export
-login <- function(hostname, username, password, identity_type = 1, redirect_uri = "http://localhost") {
+login <- function(hostname, username, password, identity_type = 1, redirect_uri = "http://localhost",
+                  mfa_code = NULL, recovery_code = NULL) {
   url <- paste0(hostname, "/api/auth/v1/login")
   body <- list(
     username = username,
@@ -217,30 +242,75 @@ login <- function(hostname, username, password, identity_type = 1, redirect_uri 
     identityType = identity_type,
     redirectUri = redirect_uri
   )
-  
-  response <- POST(url, body = body, encode = "json")
-  
+
+  # One fresh cookie jar for the whole sign-in, so the challenge cookie set by the password step
+  # reaches the second factor step.
+  jar <- handle(hostname)
+  response <- POST(url, body = body, encode = "json", handle = jar)
+
   if (status_code(response) != 200) {
     stop("Login failed: ", content(response, "text", encoding = "UTF-8"))
   }
-  h<-headers(response)
-  # Extract the cookie token from Set-Cookie header
-  cookies <- h[grep("set-cookie", names(h), ignore.case = TRUE)]
-  
-  # Find the cookie that starts with "viafoundry-cookie="
-  viafoundry_cookie <- unlist(cookies)
-  set_cookie <- viafoundry_cookie[grepl("^viafoundry-cookie=", viafoundry_cookie)]
 
-  cookie_key <- "viafoundry-cookie="
-  start <- regexpr(cookie_key, set_cookie)
-  if (start == -1) {
-    stop("Token not found in cookie.")
+  challenge <- json_body(response)
+  if (isTRUE(challenge$mfaRequired)) {
+    response <- complete_second_factor(hostname, jar, challenge$purpose, mfa_code, recovery_code)
   }
-  start <- start + nchar(cookie_key)
-  end <- regexpr(";", substr(set_cookie, start, nchar(set_cookie)))
-  token <- substr(set_cookie, start, start + end - 2)
-  
-  return(token)
+
+  jar_cookies <- cookies(response)
+  for (name in SESSION_COOKIE_NAMES) {
+    token <- jar_cookies$value[jar_cookies$name == name]
+    if (length(token) > 0 && nzchar(token[1])) {
+      return(token[1])
+    }
+  }
+  stop("Sign-in succeeded but the server returned no session cookie.")
+}
+
+# The response body as a list, or an empty list when it is not a JSON object.
+json_body <- function(response) {
+  parsed <- tryCatch(
+    fromJSON(content(response, "text", encoding = "UTF-8"), simplifyVector = FALSE),
+    error = function(e) NULL
+  )
+  if (is.list(parsed)) parsed else list()
+}
+
+# Answer the sign-in challenge with an authenticator code or a recovery code.
+complete_second_factor <- function(hostname, jar, purpose, mfa_code, recovery_code) {
+  if (!identical(purpose, "signin")) {
+    stop("Your account must set up multi-factor sign-in first. Sign in once at ", hostname,
+         " in a browser to add your authenticator app, then try again.", call. = FALSE)
+  }
+
+  if (is.null(mfa_code) && is.null(recovery_code)) {
+    if (!interactive()) {
+      stop("Your account uses multi-factor sign-in. Pass mfa_code (the 6 digit code from your ",
+           "authenticator app) or recovery_code, or authenticate with a personal access token.",
+           call. = FALSE)
+    }
+    entered <- trimws(askpass("Authenticator code (or a recovery code): "))
+    if (grepl("^[0-9]{3}\\s?[0-9]{3}$", entered)) {
+      mfa_code <- entered
+    } else {
+      recovery_code <- entered
+    }
+  }
+
+  body <- if (!is.null(mfa_code)) {
+    list(code = gsub("\\s", "", mfa_code))
+  } else {
+    list(recoveryCode = trimws(recovery_code))
+  }
+  response <- POST(paste0(hostname, "/api/auth/v1/mfa/verify"), body = body, encode = "json",
+                   handle = jar)
+  if (status_code(response) != 200) {
+    # The server answers {error, message}; the message is written for the user.
+    message <- json_body(response)$message
+    if (is.null(message)) message <- paste("HTTP", status_code(response))
+    stop("Multi-factor sign-in failed: ", message, call. = FALSE)
+  }
+  response
 }
 
 #' Get bearer token using the cookie token
@@ -259,8 +329,8 @@ get_bearer_token <- function(hostname, cookie_token, name = "token") {
     "User-Agent" = "curl/8.7.1",
     "Accept" = "*/*"
   )
-  # Define Cookie separately to avoid duplication
-  cookie <- set_cookies(`viafoundry-cookie` = cookie_token)
+  # Sent under both session cookie names, so servers before and after the rebrand accept it
+  cookie <- set_cookies(`foundry-connect-cookie` = cookie_token, `viafoundry-cookie` = cookie_token)
   
   body <- list(
     name = name,

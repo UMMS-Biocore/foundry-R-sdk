@@ -89,6 +89,8 @@ authenticate(
 )
 ```
 
+If your account uses multi-factor sign-in, also pass the 6 digit code from your authenticator app as `mfa_code = "123456"`, or a recovery code as `recovery_code = "..."`. In an interactive session you are prompted for the code when you leave both out. The stored token lasts 30 days, so you enter a code about once a month. If your account must set up multi-factor sign-in but has not yet, sign in once in a browser to add your authenticator app, then authenticate again.
+
 ### Configuration File
 The viafoundry package uses a configuration file `(~/.viaenv)` to store the `hostname` and token. Example:
 
