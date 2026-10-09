@@ -75,7 +75,7 @@ loadFile <- function(json_data, processName, fileName, sep = "\t", download_dir 
   # Handle file based on extension
   if (file_extension %in% c("tsv", "csv", "txt")) {
     # Download and load the tabular file
-    response <- GET(file_url, add_headers(Cookie = paste0("viafoundry-cookie=", config$token)))
+    response <- GET(file_url, get_headers())
     if (status_code(response) != 200) {
       stop("Failed to fetch the file from the server. Status: ", status_code(response))
     }
@@ -87,7 +87,7 @@ loadFile <- function(json_data, processName, fileName, sep = "\t", download_dir 
   } else {
     # Download the file to the specified directory
     output_path <- file.path(download_dir, fileName)
-    response <- GET(file_url, add_headers(Cookie = paste0("viafoundry-cookie=", config$token)), write_disk(output_path, overwrite = TRUE))
+    response <- GET(file_url, get_headers(), write_disk(output_path, overwrite = TRUE))
     if (status_code(response) != 200) {
       stop("Failed to download the file from the server. Status: ", status_code(response))
     }
